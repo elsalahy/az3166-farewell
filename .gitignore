@@ -1,0 +1,5 @@
+/target
+.DS_Store
+
+# Fetched on demand by ./restore-factory.sh - not ours to redistribute.
+devkit-firmware-*.bin

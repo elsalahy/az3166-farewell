@@ -1,0 +1,23 @@
+[package]
+name = "az3166-farewell"
+version = "0.1.0"
+edition = "2021"
+description = "A farewell card that runs on the OLED of an MXChip AZ3166 IoT DevKit"
+license = "MIT"
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.6"
+panic-halt = "1.0"
+embedded-graphics = "0.8.2"
+ssd1306 = "0.10"
+
+[dependencies.stm32f4xx-hal]
+version = "0.22.1"
+features = ["stm32f412"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+debug = true
