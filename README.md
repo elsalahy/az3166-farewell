@@ -15,17 +15,39 @@ Everything you'd want to change lives in one array at the top of [`src/main.rs`]
 
 ```rust
 static CARDS: &[Card] = &[
-    Card { headline: "THANK YOU", lines: &["Joel"] },
-    Card { headline: "",          lines: &["for everything", "you built with us", "at Q-Bird"] },
+    Card::Text("THANK YOU", &["Joel"]),
+    Card::Text("", &["for everything", "you built with us", "at Q-Bird"]),
+    // ...
+    Card::Ferris,
+];
+```
+
+Each card is one screen, shown for `CARD_DWELL_MS` before the next one. Width budget:
+**14 characters** for a headline (9x15 bold), **21 characters** for a body line (6x10).
+Pass `""` as the headline to leave it off. Text is centred horizontally and the block is
+centred vertically, so short cards look fine.
+
+Change the strings, run `./flash.sh`, done — about 20 seconds.
+
+### Ferris
+
+The last card is Ferris, the Rust mascot, hand-drawn as ASCII art in the same file:
+
+```rust
+static FERRIS: &[&str] = &[
+    ".................##############.................",
+    "...............##################...............",
     // ...
 ];
 ```
 
-Each `Card` is one screen, shown for `CARD_DWELL_MS` before the next one. Width budget:
-**14 characters** for a `headline` (9x15 bold), **21 characters** for a body `line` (6x10).
-Text is centred horizontally and the block is centred vertically, so short cards look fine.
+`#` is a lit pixel. `expand_ferris()` blows it up 2x into a 1bpp MSB-first bitmap at build
+time — 48x17 becomes 96x34, which is exactly 12 bytes per row, so there's no row padding to
+get wrong. Every index is bounded by `FERRIS_W` / `FERRIS_H`, so if you edit the art and
+miscount a row you get a clipped crab rather than a panicking board.
 
-Change the strings, run `./flash.sh`, done — about 20 seconds.
+Redraw him however you like; keep the source art within **64 x 24** so the 2x version still
+fits the blue part of the panel.
 
 ## Flashing it
 

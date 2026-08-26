@@ -11,6 +11,7 @@ use panic_halt as _;
 
 use embedded_graphics::{
     draw_target::DrawTarget,
+    image::{Image, ImageRaw},
     mono_font::{
         ascii::{FONT_6X10, FONT_9X15_BOLD},
         MonoFont, MonoTextStyle,
@@ -26,40 +27,57 @@ use stm32f4xx_hal::{pac, prelude::*};
 // ---------------------------------------------------------------------------
 // THE ONLY PART YOU NEED TO EDIT
 //
-// Each Card is one screen. It shows for CARD_DWELL_MS, then the next one, forever.
-// Width budget: headline <= 14 characters, body lines <= 21 characters.
+// Each card is one screen. It shows for CARD_DWELL_MS, then the next one, forever.
 // ---------------------------------------------------------------------------
 
-struct Card {
-    headline: &'static str,
-    lines: &'static [&'static str],
+enum Card {
+    /// A headline plus body lines. Pass "" as the headline to leave it off.
+    /// Width budget: headline <= 14 characters, body lines <= 21 characters.
+    Text(&'static str, &'static [&'static str]),
+    /// Ferris, the Rust mascot, drawn from the ASCII art further down.
+    Ferris,
 }
 
 static CARDS: &[Card] = &[
-    Card {
-        headline: "THANK YOU",
-        lines: &["Joel"],
-    },
-    Card {
-        headline: "",
-        lines: &["for everything", "you built with us", "at Q-Bird"],
-    },
-    Card {
-        headline: "GOOD LUCK",
-        lines: &["on whatever", "you build next"],
-    },
-    Card {
-        headline: "",
-        lines: &["- Ahmed", "& the Q-Bird team"],
-    },
-    Card {
-        headline: "",
-        lines: &["(this card runs on", "128x64 px of Rust)"],
-    },
+    Card::Text("THANK YOU", &["Joel"]),
+    Card::Text("", &["for everything", "you built with us", "at Q-Bird"]),
+    Card::Text("GOOD LUCK", &["on whatever", "you build next"]),
+    Card::Text("", &["- Ahmed", "& the Q-Bird team"]),
+    Card::Text("", &["(this card runs on", "128x64 px of Rust)"]),
+    Card::Ferris,
 ];
 
 /// How long each card stays on screen.
 const CARD_DWELL_MS: u32 = 2_500;
+
+/// Ferris, drawn by hand. '#' is a lit pixel, everything else is dark.
+///
+/// Every row must be exactly FERRIS_W characters and there must be FERRIS_H of
+/// them - anything longer is clipped rather than panicking, so a miscount shows
+/// up as a chopped crab rather than a dead board. Drawn at 2x, so the sprite
+/// must stay within 64 x 24 to fit the blue part of the panel.
+static FERRIS: &[&str] = &[
+    ".................##############.................",
+    "...............##################...............",
+    "..............####################..............",
+    ".............####...########...####.............",
+    "..#####......####...########...####......#####..",
+    "..#####.....#####...########...#####.....#####..",
+    ".....###....########################....###.....",
+    "..######....########################....######..",
+    "..#######...########################...#######..",
+    ".....################......################.....",
+    "........################################........",
+    ".............######################.............",
+    ".............######################.............",
+    "..............####################..............",
+    "................################................",
+    "...............###..###..###..###...............",
+    "...............##....##..##....##...............",
+];
+
+const FERRIS_W: usize = 48;
+const FERRIS_H: usize = 17;
 
 // ---------------------------------------------------------------------------
 // Everything below is plumbing.
@@ -77,11 +95,21 @@ const BODY_FONT: MonoFont = FONT_6X10;
 const HEADLINE_GAP: i32 = 5;
 const LINE_PITCH: i32 = 12;
 
+const PANEL_W: i32 = 128;
+
 /// This panel is a two-tone module: 16 rows of yellow and 48 of blue, with a
 /// hard colour break where they meet. After Rotate180 the yellow band is the
-/// bottom 16 rows in our coordinates, so text is centred within the blue region
-/// only - otherwise a line can come out half yellow and half blue.
+/// bottom 16 rows in our coordinates, so artwork is centred within the blue
+/// region only - otherwise a line comes out half yellow and half blue.
 const BLUE_ROWS: i32 = 48;
+
+/// Ferris gets drawn at 2x. A 1bpp bitmap needs its rows padded to whole bytes;
+/// 48 * 2 = 96 pixels is exactly 12 bytes, so there is no padding to worry about.
+const SPRITE_SCALE: usize = 2;
+const SPRITE_W: usize = FERRIS_W * SPRITE_SCALE;
+const SPRITE_H: usize = FERRIS_H * SPRITE_SCALE;
+const SPRITE_STRIDE: usize = SPRITE_W / 8;
+const SPRITE_LEN: usize = SPRITE_STRIDE * SPRITE_H;
 
 #[entry]
 fn main() -> ! {
@@ -124,6 +152,14 @@ fn main() -> ! {
         sleep_ms(200);
     }
 
+    let mut sprite = [0u8; SPRITE_LEN];
+    expand_ferris(&mut sprite);
+    let ferris = ImageRaw::<BinaryColor>::new(&sprite, SPRITE_W as u32);
+    let ferris_at = Point::new(
+        (PANEL_W - SPRITE_W as i32) / 2,
+        (BLUE_ROWS - SPRITE_H as i32) / 2,
+    );
+
     let headline_style = MonoTextStyle::new(&HEADLINE_FONT, BinaryColor::On);
     let body_style = MonoTextStyle::new(&BODY_FONT, BinaryColor::On);
     let centered = TextStyleBuilder::new()
@@ -141,20 +177,37 @@ fn main() -> ! {
                 .draw(&mut display)
                 .unwrap();
 
-            let mut y = top_of_block(card);
+            match card {
+                Card::Ferris => {
+                    Image::new(&ferris, ferris_at).draw(&mut display).unwrap();
+                }
+                Card::Text(headline, lines) => {
+                    let mut y = top_of_block(headline, lines);
 
-            if !card.headline.is_empty() {
-                Text::with_text_style(card.headline, Point::new(64, y), headline_style, centered)
-                    .draw(&mut display)
-                    .unwrap();
-                y += HEADLINE_FONT.character_size.height as i32 + HEADLINE_GAP;
-            }
+                    if !headline.is_empty() {
+                        Text::with_text_style(
+                            headline,
+                            Point::new(PANEL_W / 2, y),
+                            headline_style,
+                            centered,
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+                        y += HEADLINE_FONT.character_size.height as i32 + HEADLINE_GAP;
+                    }
 
-            for line in card.lines {
-                Text::with_text_style(line, Point::new(64, y), body_style, centered)
-                    .draw(&mut display)
-                    .unwrap();
-                y += LINE_PITCH;
+                    for line in *lines {
+                        Text::with_text_style(
+                            line,
+                            Point::new(PANEL_W / 2, y),
+                            body_style,
+                            centered,
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+                        y += LINE_PITCH;
+                    }
+                }
             }
 
             // A dropped frame is not worth halting the whole card for.
@@ -164,10 +217,36 @@ fn main() -> ! {
     }
 }
 
+/// Blow the ASCII art up to 2x into a 1bpp, MSB-first bitmap. Every index is
+/// bounded by the constants above, so a mis-sized row clips instead of panicking.
+fn expand_ferris(buf: &mut [u8; SPRITE_LEN]) {
+    for (sy, row) in FERRIS.iter().enumerate() {
+        if sy >= FERRIS_H {
+            break;
+        }
+        for (sx, ch) in row.bytes().enumerate() {
+            if sx >= FERRIS_W {
+                break;
+            }
+            if ch != b'#' {
+                continue;
+            }
+            for dy in 0..SPRITE_SCALE {
+                for dx in 0..SPRITE_SCALE {
+                    let x = sx * SPRITE_SCALE + dx;
+                    let y = sy * SPRITE_SCALE + dy;
+                    buf[y * SPRITE_STRIDE + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+    }
+}
+
 /// Vertically centre the card's block of text within the blue part of the panel.
-fn top_of_block(card: &Card) -> i32 {
-    let mut height = card.lines.len() as i32 * LINE_PITCH - (LINE_PITCH - BODY_FONT.character_size.height as i32);
-    if !card.headline.is_empty() {
+fn top_of_block(headline: &str, lines: &[&str]) -> i32 {
+    let mut height =
+        lines.len() as i32 * LINE_PITCH - (LINE_PITCH - BODY_FONT.character_size.height as i32);
+    if !headline.is_empty() {
         height += HEADLINE_FONT.character_size.height as i32 + HEADLINE_GAP;
     }
     let top = (BLUE_ROWS - height) / 2;
