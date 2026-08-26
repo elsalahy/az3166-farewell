@@ -109,6 +109,18 @@ const PANEL_W: i32 = 128;
 /// region only - otherwise a line comes out half yellow and half blue.
 const BLUE_ROWS: i32 = 48;
 
+/// The yellow stripe is the one part of the panel that isn't blue, so it gets
+/// the progress bar: it fills across the whole deck and resets when the loop
+/// restarts, which reads as both "how far through" and "how long until the next
+/// card". Redrawing only these rows keeps each frame cheap - ssd1306 tracks the
+/// dirty region, so a step flushes two pages rather than the whole framebuffer.
+const PROGRESS_TOP: i32 = 52;
+const PROGRESS_H: u32 = 8;
+const PROGRESS_INSET: i32 = 4;
+
+/// Animation steps per card. 40 across 2.5 s is a visible crawl rather than a jump.
+const PROGRESS_STEPS: u32 = 40;
+
 /// Ferris gets drawn at 2x. A 1bpp bitmap needs its rows padded to whole bytes;
 /// 48 * 2 = 96 pixels is exactly 12 bytes, so there is no padding to worry about.
 const SPRITE_SCALE: usize = 2;
@@ -174,8 +186,10 @@ fn main() -> ! {
         .build();
     let border = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
+    let total_steps = CARDS.len() as u32 * PROGRESS_STEPS;
+
     loop {
-        for card in CARDS {
+        for (index, card) in CARDS.iter().enumerate() {
             display.clear(BinaryColor::Off).unwrap();
 
             match card {
@@ -220,10 +234,53 @@ fn main() -> ! {
                 }
             }
 
-            // A dropped frame is not worth halting the whole card for.
-            let _ = display.flush();
-            sleep_ms(CARD_DWELL_MS);
+            // Hold the card, creeping the progress bar along as we wait. Only
+            // the yellow rows change per step, so these flushes are small; the
+            // first one carries the whole card because clear() dirtied it all.
+            for step in 0..PROGRESS_STEPS {
+                draw_progress(
+                    &mut display,
+                    index as u32 * PROGRESS_STEPS + step + 1,
+                    total_steps,
+                );
+                // A dropped frame is not worth halting the whole card for.
+                let _ = display.flush();
+                sleep_ms(CARD_DWELL_MS / PROGRESS_STEPS);
+            }
         }
+    }
+}
+
+/// Draw the deck-progress bar into the yellow stripe. Wipes the band first so
+/// successive steps don't smear, and touches nothing above BLUE_ROWS.
+fn draw_progress<D>(target: &mut D, done: u32, total: u32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let track_w = (PANEL_W - 2 * PROGRESS_INSET) as u32;
+
+    let _ = Rectangle::new(
+        Point::new(0, BLUE_ROWS),
+        Size::new(PANEL_W as u32, (64 - BLUE_ROWS) as u32),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+    .draw(target);
+
+    let _ = Rectangle::new(
+        Point::new(PROGRESS_INSET, PROGRESS_TOP),
+        Size::new(track_w, PROGRESS_H),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+    .draw(target);
+
+    let filled = (track_w - 2) * done / total;
+    if filled > 0 {
+        let _ = Rectangle::new(
+            Point::new(PROGRESS_INSET + 1, PROGRESS_TOP + 1),
+            Size::new(filled, PROGRESS_H - 2),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(target);
     }
 }
 

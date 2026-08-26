@@ -7,7 +7,10 @@ exactly one thing: it cycles a handful of thank-you messages across the board's 
 OLED, forever, on a loop. No Wi-Fi, no cloud, no sensors, no telemetry. Plug it into any USB
 port — a laptop, a phone charger, a power bank — and it says its piece.
 
-Written in Rust, `#![no_std]`, no RTOS. About 12 KB of firmware.
+A progress bar creeps across the panel's yellow stripe as it goes, so you can see the next
+card coming and where you are in the loop.
+
+Written in Rust, `#![no_std]`, no RTOS. About 14 KB of firmware.
 
 ## Editing the messages
 
@@ -129,8 +132,15 @@ card draws within rows 0..47, including the frame, which is `128 x 48` rather th
 `128 x 64` for exactly this reason.
 
 Flip it around and the band becomes a second colour rather than a hazard: anything you draw
-at `y >= 48` comes out yellow. A footer, a signature line, an accent rule under a headline.
-This code treats it as off-limits, but that's a design choice, not a constraint.
+at `y >= 48` comes out yellow. That's what the progress bar uses it for — `draw_progress()`
+owns rows 48..63 and nothing else touches them, so the bar is the only yellow on the panel
+and reads as an accent instead of a defect.
+
+That split also makes the animation cheap. ssd1306 tracks a dirty rectangle and flushes only
+what changed, so a progress step sends two pages (~256 bytes, ~6 ms over I2C) rather than the
+full 1 KB framebuffer. Only the first flush after a card change is a full one, because
+`clear()` dirties everything. Forty full flushes per card would have spent a third of the
+dwell time pushing pixels.
 
 If you add cards, keep the block under 48 px tall: a headline plus two body lines (42 px) is
 the practical maximum.
