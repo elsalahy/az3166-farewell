@@ -10,7 +10,7 @@ port — a laptop, a phone charger, a power bank — and it says its piece.
 A progress bar creeps across the panel's yellow stripe as it goes, so you can see the next
 card coming and where you are in the loop.
 
-Written in Rust, `#![no_std]`, no RTOS. About 14 KB of firmware.
+Written in Rust, `#![no_std]`, no RTOS. About 18 KB of firmware.
 
 ## Editing the messages
 
@@ -29,6 +29,9 @@ Each card is one screen, shown for `CARD_DWELL_MS` before the next one. Width bu
 **14 characters** for a headline (9x15 bold), **21 characters** for a body line (6x10).
 Pass `""` as the headline to leave it off. Text is centred horizontally and the block is
 centred vertically, so short cards look fine.
+
+Accented characters work — the fonts come from `mono_font::iso_8859_1`, not `mono_font::ascii`,
+so anything in Latin-1 (`ë`, `é`, `ü`, `ñ`, …) renders properly instead of as a placeholder box.
 
 Change the strings, run `./flash.sh`, done — about 20 seconds.
 

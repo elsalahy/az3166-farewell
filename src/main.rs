@@ -12,8 +12,10 @@ use panic_halt as _;
 use embedded_graphics::{
     draw_target::DrawTarget,
     image::{Image, ImageRaw},
+    // iso_8859_1 rather than ascii: the ascii set has no glyph for the diaeresis
+    // in "Joël" and would draw a placeholder box instead.
     mono_font::{
-        ascii::{FONT_6X10, FONT_9X15_BOLD},
+        iso_8859_1::{FONT_6X10, FONT_9X15_BOLD},
         MonoFont, MonoTextStyle,
     },
     pixelcolor::BinaryColor,
@@ -39,7 +41,7 @@ enum Card {
 }
 
 static CARDS: &[Card] = &[
-    Card::Text("THANK YOU", &["Joel"]),
+    Card::Text("THANK YOU", &["Joël"]),
     Card::Text("", &["for everything", "you built with us", "at Q-Bird"]),
     Card::Text("GOOD LUCK", &["on whatever", "you build next"]),
     Card::Text("", &["- Ahmed", "& the Q-Bird team"]),
@@ -135,6 +137,10 @@ fn main() -> ! {
     unsafe {
         (*cortex_m::peripheral::SCB::PTR).vtor.write(APP_BASE);
     }
+
+    // Costs nothing at runtime, but makes COLOPHON a genuine reference so the
+    // linker keeps the note in the flashed image. See the bottom of this file.
+    core::hint::black_box(COLOPHON);
 
     let dp = pac::Peripherals::take().unwrap();
     let clocks = dp.RCC.constrain().cfgr.freeze();
@@ -328,3 +334,42 @@ fn top_of_block(headline: &str, lines: &[&str]) -> i32 {
 fn sleep_ms(ms: u32) {
     cortex_m::asm::delay(SYSCLK_HZ / 1_000 * ms);
 }
+
+// ---------------------------------------------------------------------------
+
+/// Never drawn on the panel. It is in the flashed image though, so:
+///
+///     strings firmware.bin | grep -A20 'started at'
+///
+/// Keeping it there takes more than `#[used]`: that stops LLVM dropping the
+/// static, but the linker still runs --gc-sections and collects it anyway. The
+/// black_box() in main() is what actually holds it in - it makes the string
+/// genuinely referenced by code, so the section survives.
+#[used]
+static COLOPHON: &str = "
+This started at 11:12pm on 26 August 2026, as 'I have an hour, and if it
+doesn't work in an hour I'm not doing it'. It did not work in an hour. It
+went past midnight, mostly because the bootloader fought back twice.
+
+Round one: flashing the ELF instead of the .bin wrote a stray segment to
+0x08000000, erased flash sector 0 and took MXChip's bootloader with it.
+Recovered from Microsoft's own release image. Round two: the restored
+bootloader then flatly refused to chain-load a non-MXChip app, so this
+firmware gave up on it and took over flash from the base address instead.
+
+The one that actually cost the evening: this panel's OLED will not answer
+on I2C at all until you release its reset line on PA8. Out of a cold boot
+that pin floats, the display is held in reset, and you get a perfectly
+configured I2C bus talking to nobody. It isn't in any pinout diagram - it
+is one line in Zephyr's devicetree.
+
+Ahmed wrote it. Claude (Opus 5) did the driving on the STM32 side: found
+the pinout, bricked the bootloader, put it back, and worked out the PA8
+thing by dumping registers over SWD until the silence made sense.
+
+The crab is hand-drawn ASCII, 64x22, scaled 2x at boot. The progress bar
+lives in the bottom 16 rows because that strip of the glass is physically
+yellow instead of blue, and it seemed a waste not to use it.
+
+Thanks for everything, Joël.
+";
