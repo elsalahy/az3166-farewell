@@ -19,7 +19,7 @@ Everything you'd want to change lives in one array at the top of [`src/main.rs`]
 ```rust
 static CARDS: &[Card] = &[
     Card::Text("THANK YOU", &["Joel"]),
-    Card::Text("", &["for everything", "you built with us", "at Q-Bird"]),
+    Card::Text("", &["for everything", "you built with us", "at Q*Bird"]),
     // ...
     Card::Ferris,
 ];
@@ -99,6 +99,7 @@ Collected the hard way; recorded here so nobody has to dig for them again.
 | OLED | SSD1306 128x64 |
 | OLED bus | **I2C1**, **PB8 = SCL**, **PB9 = SDA**, address **0x3C** |
 | OLED reset | **PA8** — must be driven high before the panel will talk (see below) |
+| RGB LED | red **PB4** (TIM3\_CH1, AF2), green **PB3** (TIM2\_CH2, AF1), blue **PC7** (TIM3\_CH2, AF2) |
 | OLED orientation | panel is mounted with segment-remap + inverted COM scan → `DisplayRotation::Rotate180` |
 | Debugger | on-board **ST-Link/V2-1**, USB `0x0483:0x374b` (*not* CMSIS-DAP, despite the mbed-style `DETAILS.TXT` on the mass-storage drive) |
 | Serial | `/dev/cu.usbmodem*` @ 115200 (USART6, PA11/PA12) — unused here |
@@ -116,6 +117,28 @@ Linking there and letting the bootloader chain-load us *doesn't work* — the bo
 hand off to a non-MXChip image. The board boots, stays in the bootloader spinning in RAM,
 prints nothing on the serial console, and never reaches the app. So this firmware owns flash
 from `0x08000000` and boots directly. `restore-factory.sh` puts MXChip's layout back.
+
+### The RGB LED's green is on a different timer, and two of its pins are JTAG
+
+Red and blue are both TIM3 (channels 1 and 2), but green is TIM2 channel 2 — that's the
+board's wiring, so driving the LED means running two timers, not one.
+
+The sharper edge: **PB4 and PB3 come out of reset as `Alternate<0>`**, because they are JTAG's
+NJTRST and JTDO. The HAL won't hand an already-alternate pin to a PWM channel, so they need
+claiming first:
+
+```rust
+let mut led_r = t3c1.with(gpiob.pb4.into_push_pull_output());   // PB4 = NJTRST at reset
+let mut led_g = t2c2.with(gpiob.pb3.into_push_pull_output());   // PB3 = JTDO/SWO at reset
+let mut led_b = t3c2.with(gpioc.pc7);                           // PC7 is a normal pin
+```
+
+Repurposing them is safe here because the board debugs over SWD (PA13/PA14), which those pins
+have nothing to do with. You lose SWO trace output, which this firmware never used.
+
+Hardware PWM rather than bit-banging is deliberate: the CPU spends ~6 ms of every animation
+step blocked in `flush()` pushing pixels over I2C, and software PWM would visibly stutter
+through each one. The timers don't care what the CPU is doing.
 
 ### The panel is two-tone, so keep text out of the seam
 

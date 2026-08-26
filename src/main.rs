@@ -20,7 +20,7 @@ use embedded_graphics::{
     },
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{PrimitiveStyle, Rectangle, Triangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
@@ -33,24 +33,46 @@ use stm32f4xx_hal::{pac, prelude::*};
 // ---------------------------------------------------------------------------
 
 enum Card {
-    /// A headline plus body lines. Pass "" as the headline to leave it off.
-    /// Width budget: headline <= 14 characters, body lines <= 21 characters.
-    Text(&'static str, &'static [&'static str]),
+    /// Big lines (9x15 bold) followed by body lines (6x10). Either list may be
+    /// empty. Width budget: 14 characters big, 21 characters body.
+    Text(&'static [&'static str], &'static [&'static str]),
+    /// A hazard triangle over body lines. No font here has a warning glyph, so
+    /// the sign is drawn. Two body lines is the most that fits under it.
+    Warning(&'static [&'static str]),
     /// Ferris, the Rust mascot, drawn from the ASCII art further down.
     Ferris,
 }
 
 static CARDS: &[Card] = &[
-    Card::Text("THANK YOU", &["Joël"]),
-    Card::Text("", &["for everything", "you built with us", "at Q-Bird"]),
-    Card::Text("GOOD LUCK", &["on whatever", "you build next"]),
-    Card::Text("", &["- Ahmed", "& the Q-Bird team"]),
-    Card::Text("", &["(this card runs on", "128x64 px of Rust)"]),
+    Card::Warning(&["Emotional farewell", "embedded style ahead"]),
+    Card::Text(&["Joël", "THANK YOU"], &[]),
+    Card::Text(&[], &["for everything", "you built with us", "at Q*Bird"]),
+    Card::Text(&["3.5 YEARS"], &["of working together!"]),
+    Card::Text(&["2 RUST TALKS"], &["given by you:", "12/12/24 & 27/08/26"]),
+    Card::Text(&["GOOD LUCK"], &["on your next", "adventure"]),
+    Card::Text(&["Ahmed"], &["& the Q*Bird team"]),
+    Card::Text(&[], &["(this card runs on", "128x64 px of Rust)"]),
     Card::Ferris,
 ];
 
 /// How long each card stays on screen.
 const CARD_DWELL_MS: u32 = 2_500;
+
+/// One colour for the RGB LED per card. Each card switch flares the LED up to
+/// full in its colour and then settles to a low glow, so the change is
+/// announced rather than just happening. Indexed modulo, so a short palette
+/// simply repeats and you can never index past the end.
+static PALETTE: &[(u8, u8, u8)] = &[
+    (255, 130, 0),   // warning        - amber
+    (255, 215, 160), // Joël/THANK YOU - warm white
+    (0, 190, 255),   // at Q*Bird      - cyan
+    (0, 255, 90),    // 3.5 YEARS      - green
+    (255, 70, 0),    // 2 RUST TALKS   - rust orange
+    (60, 120, 255),  // GOOD LUCK      - blue
+    (225, 0, 255),   // Ahmed          - magenta
+    (255, 255, 255), // 128x64 px      - white
+    (255, 95, 25),   // Ferris         - crab orange
+];
 
 /// Ferris, drawn by hand. '#' is a lit pixel, everything else is dark.
 ///
@@ -100,8 +122,20 @@ const SYSCLK_HZ: u32 = 16_000_000;
 
 const HEADLINE_FONT: MonoFont = FONT_9X15_BOLD;
 const BODY_FONT: MonoFont = FONT_6X10;
+
+const HEADLINE_H: i32 = HEADLINE_FONT.character_size.height as i32;
+const BODY_H: i32 = BODY_FONT.character_size.height as i32;
+
+/// Baseline-to-baseline spacing within each run of lines, and the larger gap
+/// where a run of big lines meets a run of body lines.
+const HEADLINE_PITCH: i32 = HEADLINE_H + 2;
+const LINE_PITCH: i32 = BODY_H + 2;
 const HEADLINE_GAP: i32 = 5;
-const LINE_PITCH: i32 = 12;
+
+/// The hazard triangle on the warning card, sized so the sign plus two body
+/// lines still clears the yellow seam.
+const WARN_H: i32 = 16;
+const WARN_HALF_W: i32 = 11;
 
 const PANEL_W: i32 = 128;
 
@@ -122,6 +156,17 @@ const PROGRESS_INSET: i32 = 4;
 
 /// Animation steps per card. 40 across 2.5 s is a visible crawl rather than a jump.
 const PROGRESS_STEPS: u32 = 40;
+
+/// The RGB LED flare: rise to full over RISE steps, ease back to IDLE over FALL,
+/// then hold. In steps, against PROGRESS_STEPS above.
+const LED_RISE: u32 = 5;
+const LED_FALL: u32 = 14;
+const LED_PEAK: u32 = 255;
+const LED_IDLE: u32 = 30;
+
+/// 1 kHz is far above anything the eye catches, and with a 16 MHz timer clock it
+/// leaves ~16000 steps of duty resolution - plenty for a smooth fade.
+const LED_PWM_HZ: u32 = 1_000;
 
 /// Ferris gets drawn at 2x. A 1bpp bitmap needs its rows padded to whole bytes;
 /// 48 * 2 = 96 pixels is exactly 12 bytes, so there is no padding to worry about.
@@ -157,9 +202,31 @@ fn main() -> ! {
     sleep_ms(100);
 
     let gpiob = dp.GPIOB.split();
+    let gpioc = dp.GPIOC.split();
+
     let scl = gpiob.pb8.into_alternate_open_drain();
     let sda = gpiob.pb9.into_alternate_open_drain();
     let i2c = dp.I2C1.i2c((scl, sda), 400.kHz(), &clocks);
+
+    // RGB LED. Red and blue hang off TIM3, green off TIM2 - that split is the
+    // board's wiring, not a choice. PB3/PB4 come out of reset as JTAG pins
+    // (JTDO/NJTRST); reconfiguring them is harmless because we debug over SWD.
+    //
+    // Hardware PWM rather than bit-banging: the timers keep driving the LED
+    // while the CPU is blocked pushing pixels over I2C, which software PWM
+    // would visibly stutter through.
+    let (_tim3, (t3c1, t3c2, ..)) = dp.TIM3.pwm_hz(LED_PWM_HZ.Hz(), &clocks);
+    let (_tim2, (_, t2c2, ..)) = dp.TIM2.pwm_hz(LED_PWM_HZ.Hz(), &clocks);
+    // PB4/PB3 arrive as Alternate<0>, i.e. still in JTAG mode, and the HAL will
+    // only take a pin that isn't already alternate - so claim them as plain
+    // outputs first. PC7 needs no such thing.
+    let mut led_r = t3c1.with(gpiob.pb4.into_push_pull_output());
+    let mut led_b = t3c2.with(gpioc.pc7);
+    let mut led_g = t2c2.with(gpiob.pb3.into_push_pull_output());
+    led_r.enable();
+    led_g.enable();
+    led_b.enable();
+    let led_max = (led_r.get_max_duty(), led_g.get_max_duty(), led_b.get_max_duty());
 
     // The panel is mounted with segment-remap + inverted COM scan, so it reads
     // the right way up only when the driver rotates by 180 degrees.
@@ -203,7 +270,34 @@ fn main() -> ! {
                 Card::Ferris => {
                     Image::new(&ferris, ferris_at).draw(&mut display).unwrap();
                 }
-                Card::Text(headline, lines) => {
+                Card::Warning(lines) => {
+                    Rectangle::new(Point::zero(), Size::new(PANEL_W as u32, BLUE_ROWS as u32))
+                        .into_styled(border)
+                        .draw(&mut display)
+                        .unwrap();
+
+                    let text_h = (lines.len() as i32 - 1) * LINE_PITCH + BODY_H;
+                    let mut y = (BLUE_ROWS - (WARN_H + HEADLINE_GAP + text_h)) / 2;
+                    if y < 3 {
+                        y = 3;
+                    }
+
+                    draw_warning_sign(&mut display, y);
+                    y += WARN_H + HEADLINE_GAP;
+
+                    for line in *lines {
+                        Text::with_text_style(
+                            line,
+                            Point::new(PANEL_W / 2, y),
+                            body_style,
+                            centered,
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+                        y += LINE_PITCH;
+                    }
+                }
+                Card::Text(big, lines) => {
                     // Frame the blue region only. Stretching it over all 64 rows
                     // would light pixels under the yellow stripe, which is the
                     // only reason any yellow ever showed up on a text card.
@@ -212,18 +306,24 @@ fn main() -> ! {
                         .draw(&mut display)
                         .unwrap();
 
-                    let mut y = top_of_block(headline, lines);
+                    let mut y = top_of_block(big, lines);
 
-                    if !headline.is_empty() {
+                    for line in *big {
                         Text::with_text_style(
-                            headline,
+                            line,
                             Point::new(PANEL_W / 2, y),
                             headline_style,
                             centered,
                         )
                         .draw(&mut display)
                         .unwrap();
-                        y += HEADLINE_FONT.character_size.height as i32 + HEADLINE_GAP;
+                        y += HEADLINE_PITCH;
+                    }
+
+                    // The loop above left y a full pitch past the last big line;
+                    // back up to its bottom edge and open the wider gap instead.
+                    if !big.is_empty() {
+                        y += HEADLINE_H + HEADLINE_GAP - HEADLINE_PITCH;
                     }
 
                     for line in *lines {
@@ -243,7 +343,14 @@ fn main() -> ! {
             // Hold the card, creeping the progress bar along as we wait. Only
             // the yellow rows change per step, so these flushes are small; the
             // first one carries the whole card because clear() dirtied it all.
+            let colour = PALETTE[index % PALETTE.len()];
+
             for step in 0..PROGRESS_STEPS {
+                let level = led_level(step);
+                led_r.set_duty(scale_duty(led_max.0, colour.0, level));
+                led_g.set_duty(scale_duty(led_max.1, colour.1, level));
+                led_b.set_duty(scale_duty(led_max.2, colour.2, level));
+
                 draw_progress(
                     &mut display,
                     index as u32 * PROGRESS_STEPS + step + 1,
@@ -255,6 +362,51 @@ fn main() -> ! {
             }
         }
     }
+}
+
+/// Brightness envelope for one card, in 0..=LED_PEAK: flare to full as the card
+/// appears, ease down, then hold a low glow until the next one.
+fn led_level(step: u32) -> u32 {
+    if step < LED_RISE {
+        LED_PEAK * (step + 1) / LED_RISE
+    } else if step < LED_RISE + LED_FALL {
+        LED_PEAK - (LED_PEAK - LED_IDLE) * (step - LED_RISE) / LED_FALL
+    } else {
+        LED_IDLE
+    }
+}
+
+/// Duty for one LED channel, squared so the fade looks linear to the eye rather
+/// than rushing the top end. Every intermediate stays well inside u32.
+fn scale_duty(max: u16, channel: u8, level: u32) -> u16 {
+    let gamma = level * level / LED_PEAK;
+    ((max as u32 * channel as u32 / 255) * gamma / LED_PEAK) as u16
+}
+
+/// A hazard triangle with an exclamation mark, drawn rather than typed - the
+/// bar and dot are sized to sit inside the triangle where it is still wide
+/// enough to hold them.
+fn draw_warning_sign<D>(target: &mut D, top: i32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let cx = PANEL_W / 2;
+    let bottom = top + WARN_H - 1;
+
+    let _ = Triangle::new(
+        Point::new(cx, top),
+        Point::new(cx - WARN_HALF_W, bottom),
+        Point::new(cx + WARN_HALF_W, bottom),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+    .draw(target);
+
+    let _ = Rectangle::new(Point::new(cx - 1, top + 5), Size::new(2, 5))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(target);
+    let _ = Rectangle::new(Point::new(cx - 1, top + 12), Size::new(2, 2))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(target);
 }
 
 /// Draw the deck-progress bar into the yellow stripe. Wipes the band first so
@@ -316,11 +468,16 @@ fn expand_ferris(buf: &mut [u8; SPRITE_LEN]) {
 }
 
 /// Vertically centre the card's block of text within the blue part of the panel.
-fn top_of_block(headline: &str, lines: &[&str]) -> i32 {
-    let mut height =
-        lines.len() as i32 * LINE_PITCH - (LINE_PITCH - BODY_FONT.character_size.height as i32);
-    if !headline.is_empty() {
-        height += HEADLINE_FONT.character_size.height as i32 + HEADLINE_GAP;
+fn top_of_block(big: &[&str], lines: &[&str]) -> i32 {
+    let mut height = 0;
+    if !big.is_empty() {
+        height += (big.len() as i32 - 1) * HEADLINE_PITCH + HEADLINE_H;
+    }
+    if !lines.is_empty() {
+        if height > 0 {
+            height += HEADLINE_GAP;
+        }
+        height += (lines.len() as i32 - 1) * LINE_PITCH + BODY_H;
     }
     let top = (BLUE_ROWS - height) / 2;
     if top < 3 {

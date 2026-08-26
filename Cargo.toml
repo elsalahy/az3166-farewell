@@ -5,6 +5,13 @@ edition = "2021"
 description = "A farewell card that runs on the OLED of an MXChip AZ3166 IoT DevKit"
 license = "MIT"
 
+# There is no test harness on a bare-metal target - libtest needs std. Saying so
+# explicitly stops rust-analyzer reporting "can't find crate for `test`".
+[[bin]]
+name = "az3166-farewell"
+test = false
+bench = false
+
 [dependencies]
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.6"
