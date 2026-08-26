@@ -122,6 +122,16 @@ anything crossing `y = 48` comes out half yellow and half blue. `top_of_block()`
 centres each card within `BLUE_ROWS` (0..47) rather than the full 64, which keeps every line
 on one side of the seam.
 
+You can't switch the colour off — it's a stripe on the glass. But an OLED pixel that is off
+emits nothing, so an unlit yellow pixel is simply black: the band is invisible until you
+light something in it. That's the whole trick to this firmware never showing yellow. Every
+card draws within rows 0..47, including the frame, which is `128 x 48` rather than
+`128 x 64` for exactly this reason.
+
+Flip it around and the band becomes a second colour rather than a hazard: anything you draw
+at `y >= 48` comes out yellow. A footer, a signature line, an accent rule under a headline.
+This code treats it as off-limits, but that's a design choice, not a constraint.
+
 If you add cards, keep the block under 48 px tall: a headline plus two body lines (42 px) is
 the practical maximum.
 
