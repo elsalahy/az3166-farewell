@@ -3,3 +3,16 @@
 
 # Fetched on demand by ./restore-factory.sh - not ours to redistribute.
 devkit-firmware-*.bin
+
+# Source footage for the GIFs in docs/. Hundreds of megabytes - keep it local.
+*.MOV
+*.mov
+*.mp4
+
+# Loose camera files. IMG_4692/4694 are photos of the signed board and case:
+# they carry colleagues' handwritten signatures, so they stay out of a public
+# repo unless everyone who signed is happy to be in one. Move a photo into
+# docs/ deliberately if you do want to publish it.
+IMG_*.JPG
+IMG_*.jpg
+IMG_*.HEIC

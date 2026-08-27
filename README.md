@@ -7,10 +7,18 @@ exactly one thing: it cycles a handful of thank-you messages across the board's 
 OLED, forever, on a loop. No Wi-Fi, no cloud, no sensors, no telemetry. Plug it into any USB
 port — a laptop, a phone charger, a power bank — and it says its piece.
 
-A progress bar creeps across the panel's yellow stripe as it goes, so you can see the next
-card coming and where you are in the loop.
+A progress bar creeps across the panel's yellow stripe as it goes, and the RGB LED flares in a
+different colour on every card change.
 
-Written in Rust, `#![no_std]`, no RTOS. About 18 KB of firmware.
+![The card deck cycling, with the LED changing colour per card](docs/cards.gif)
+
+Written in Rust, `#![no_std]`, no RTOS. About 25 KB of firmware.
+
+The deck ends where it should:
+
+![The last card handing over to Ferris, the Rust mascot](docs/ferris.gif)
+
+*(both clips are sped up 4x)*
 
 ## Editing the messages
 
